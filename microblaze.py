@@ -780,7 +780,7 @@ class MemBarrier(Op):
         if self.imm != -1:
             tok, ty = bn.InstructionTextToken, bn.InstructionTextTokenType
             return [
-                tok(ty.InstructionToken, name),
+                tok(ty.InstructionToken, self.op.lower()),
                 tok(ty.OperandSeparatorToken, ' '),
                 tok(ty.IntegerToken, hex(self.imm), self.imm),
             ]
