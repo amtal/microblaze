@@ -39,6 +39,7 @@ If you want to cite this plugin please use:
   @online{ublaze-arch-plugin,
     title     = {{\mu}Blaze Architecture Plugin for Binary Ninja},
     url       = {https://github.com/amtal/microblaze},
+    doi       = {10.5281/zenodo.4749824},
     author    = {amtal},
     year      = 2021,
   }
