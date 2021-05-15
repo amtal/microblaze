@@ -1,4 +1,6 @@
-# μBlaze Architecture Plugin
+# μBlaze Architecture Plugin for Binary Ninja
+
+This is a plugin for [Binary Ninja](https://binary.ninja/) that adds MicroBlaze architecture support.
 
 [MicroBlaze](https://en.wikipedia.org/wiki/MicroBlaze) is a configurable [soft processor](https://en.wikipedia.org/wiki/Soft_microprocessor) core from Xilinx going all the way back to their Spartan-II series of [FPGA](https://en.wikipedia.org/wiki/Field-programmable_gate_array)s. It can be found in a variety of roles within larger FPGA designs: from bare-bones microcontroller, to full Linux application processor, to early-boot [embedded controller](https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841724/PMU+Firmware).
 
