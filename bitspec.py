@@ -73,7 +73,7 @@ the specifications are merged together and matched at once.  (The `dataclass`
 decorator is identical to `bitspec`, but also adds default PEP 557 dataclass
 methods.)
 
->>> @bitspec.dataclass()
+>>> @bitspec.dataclass
 ... class HPPA: pass  # Hewlett Packard Precision Architecture (PA-RISC)
 >>> @bitspec.dataclass('000010 ----- ----- 0000 001001 0 00000')
 ... class NOP(HPPA):  #                                  ^^^^^
@@ -226,12 +226,22 @@ Q: Do all sufficiently complex binary analysis projects really
    contain an ad-hoc implementation of LLVM's MCInst?
 A: Yes, but only touch LLVM when paid to.
 """
+## Run `python -m pydoc -b bitspec` to read documentation locally.
+__version__ = '0.4.2'
+__author__ = 'amtal'
+__license__ = 'MIT'  # https://opensource.org/licenses/MIT
+__all__ = ['dataclass', 'bitspec', 'is_bitspec', 'Bitspec']
 # TODO top-level from_bytes API rework
 #       addr=n argument to iter_bytes not present on from_bytes, weird
 #       maybe drop from_bytes, add a fromhex to keep examples next()-free?
-# TODO consider swapping i:16 to i%16 even i/16 for easier typing
-#      (minimize shift use, maximize chording on QWERTY... data entry is a PITA)
-#       looks weird tho
+# TODO  want a len_iter_bytes length-decoder fastpath?
+#        - need a way to signal full-decoding need though
+#          since you usually want branch decoding not just length
+#        - also very inconvenient to do with current arglen behavior,
+#          arguments might expand final matched length so whole match tree is
+#          too dynamic to try and extract a closed-form solution
+#        - __bitspec_match__ is also a hack currently breaks "frozen" objects,
+#          maybe dynamic length isn't worth it even in Python
 # TODO examples of NamedTuple / other __slots__-based IRs
 # TODO re-examine python version high watermark
 # TODO changelog in comments?
@@ -239,22 +249,53 @@ from itertools import groupby
 # Python >= 3:
 import inspect 
 from types import FunctionType
-import dataclasses  # Python >= 3.7 (can ImportError gate @dataclass?)
-from typing import TypeVar, NamedTuple # Python >= 3.5
-
-__version__ = '0.4.1'
-__author__ = 'amtal'
-__license__ = 'MIT'  # https://opensource.org/licenses/MIT
-
-__all__ = [
-    'dataclass', 'bitspec', 'is_bitspec',
-    'from_bytes', 'iter_bytes',
-    'to_bytes']
-
-BS = TypeVar('BS')
+import typing  # Python >= 3.5 for NamedTuple subclass
+import abc
 
 
-def bitspec(specification: str = '', **const_fields):
+# Attribute name for storing bitfield spec, canonical indicator for is_bitspec.
+_SPEC = '__bitspec__'
+# Cache of all subclasses, updated when __hash__ changes or on first use?
+_CACHE = '__bitspec_cache__'
+# Which pattern an object was matched from. (Used only in re-assembly.)
+_MATCH = '__bitspec_match__'
+
+
+class Bitspec(metaclass=abc.ABCMeta):
+    """PEP 3119 ABC* for bitspec-decorated classes.
+
+    Mostly here to clean up pydoc, but can be used in type annotations.
+
+    >>> import typing
+    >>> @bitspec.dataclass('0x414141')
+    ... class Aaa: pass
+    >>> def decode(bs: bytes) -> typing.List[bitspec.Bitspec]:
+    ...     return list(Aaa.iter_bytes(bs))
+
+    >>> xs = decode(b'A' * 9); xs
+    [Aaa(), Aaa(), Aaa()]
+    >>> b''.join(x.to_bytes() for x in xs)
+    b'AAAAAAAAA'
+
+    *Not a real ABC, just for annotations and documentation. See `is_bitspec`.  
+
+    >>> assert not any(isinstance(x, bitspec.Bitspec) for x in xs)
+    """
+    # Dataclass-style extension doesn't actually re-create the class, so we
+    # can't add an extra parent. This is purely a pydoc / mypy hallucination.
+    # Could add it as a decoration?
+    #
+    # For type annotation reasons, it has to be declared here and defined at
+    # the bottom. Every release of Python strays further from God's light.
+    __slots__ = _SPEC, _MATCH
+    from_bytes:classmethod
+    iter_bytes:classmethod
+    addr:typing.Optional[int]
+    to_bytes:typing.Callable[[typing.Any, int], bytes]
+    __len__:typing.Callable[[typing.Any], int]
+
+
+def bitspec(specification='', **const_fields):
     """Class decorator that adds from_bytes, to_bytes, and __len__ methods.
 
     Mini-language grammar, with whitespace separating constants and fields:
@@ -297,9 +338,10 @@ def bitspec(specification: str = '', **const_fields):
       be handy to differentiate between actual don't-care bits and parts of the
       pattern match that are matched/extracted in an argument, but is purely a
       hint to the reader and isn't validated in any way.
-    - An empty spec (default) can't be matched, but still counts as decorated
-      for class tree traversal. This is often the case for top-level
-      "instruction" classes that anchor many subclassed instruction types.
+    - An empty spec (default) can't be matched, but still gets all the extra
+      methods. This is often the case for top-level "instruction" classes that
+      anchor multiple subclassed instruction types. Either `@bitspec()` or
+      `@bitspec` decorator syntax can be used.
 
     >>> @bitspec.dataclass('-:7 .:9 a:4 b:4 c:8')
     ... class ShortOp(Op): pass
@@ -338,6 +380,9 @@ def bitspec(specification: str = '', **const_fields):
         IndexError: top-level byte alignment violated
         NameError: field names don't match constructor arguments
     """
+    if callable(specification) and len(const_fields) == 0:  # @bitspec
+        return install_methods(specification, None, {}, {})
+
     match, var_fields = load_time_parse(specification)
     check_duplicate_args(var_fields, const_fields)
     def add_bitspec(cls):
@@ -351,7 +396,8 @@ def test_bitspec():   # hack to make doctest see tests despite function
 test_bitspec.__doc__ = bitspec.__doc__
 
 
-def dataclass(specification: str = '', **const_fields):
+import dataclasses  # Python >= 3.7 (maybe ImportError gate @dataclass?)
+def dataclass(specification='', **const_fields):
     """Same class decorator as @bitspec, but with a PEP 557 @dataclass after.
     
     >>> import dataclasses
@@ -359,29 +405,40 @@ def dataclass(specification: str = '', **const_fields):
     ... @dataclasses.dataclass  # or just do @bitspec.dataclass('0xf000')
     ... class Foo: pass
     """
+    if callable(specification) and len(const_fields) == 0:  # @dataclass
+        return install_methods(install_dataclass(specification), None, {}, {})
+
     match, var_fields = load_time_parse(specification)
     check_duplicate_args(var_fields, const_fields)
     def add_bitspec_with_dataclass(cls):
-        # dataclasses.is_dataclass returns true for *inherited* dataclasses due
-        # to using `hasattr`, we're just looking to see if @dataclass has been
-        # applied already to avoid re-running it.
-        if dataclasses._FIELDS not in cls.__dict__:
-            cls = dataclasses.dataclass(cls)
+        cls = install_dataclass(cls)
         check_class_args(cls, var_fields, const_fields, specification)
         return install_methods(cls, match, var_fields, const_fields)
     return add_bitspec_with_dataclass
 
 
-def is_bitspec(cls_or_obj) -> bool:
+def install_dataclass(cls):
+    # dataclasses.is_dataclass returns true for *inherited* dataclasses due
+    # to using `hasattr`, we're just looking to see if @dataclass has been
+    # applied already to avoid re-running it.
+    is_already = dataclasses._FIELDS in cls.__dict__
+    return cls if is_already else dataclasses.dataclass(cls)
+    # this was the only use of the module, could drop dep for py2.7
+
+
+def is_bitspec(cls_or_obj: typing.Any) -> bool:
     """True if cls_or_obj has been directly decorated with a bitspec.
     
-    >>> @bitspec.bitspec("0xdeadbeef")
-    ... class Foo: pass
-    >>> class Bar(Foo): pass
-    >>> bitspec.is_bitspec(Foo.from_bytes(b'\\xde\\xad\\xbe\\xef'))
-    True
-    >>> [bitspec.is_bitspec(x) for x in [Foo, Bar]]
-    [True, False]
+    >>> @bitspec.bitspec
+    ... class Foo: pass       # can be matched, has extra methods
+    >>> class Bar(Foo): pass  # can't be matched, no extra methods
+    >>> @bitspec.bitspec("0x0badf00d")
+    ... class Baz(Bar): pass  # part of the match for Foo
+    >>> [bitspec.is_bitspec(x) for x in [Foo, Bar, Baz]]
+    [True, False, True]
+    >>> [cls.from_bytes(b'\\x0b\\xad\\xf0\\x0d') for cls in Baz.__mro__ 
+    ...                                          if bitspec.is_bitspec(cls)]
+    [<__main__.Baz object at ...>, <__main__.Baz object at ...>]
 
     Since from_bytes returns instances of the specific class that's been
     decorated, there's no clear meaning for calling it on a non-decorated
@@ -395,7 +452,7 @@ def is_bitspec(cls_or_obj) -> bool:
     cls = cls_or_obj if isinstance(cls_or_obj, type) else type(cls_or_obj)
     return _SPEC in cls.__dict__
 
-def iter_bytes(cls, bytes, byteswap=0, addr=None):
+def iter_bytes(cls, bytes:bytes, byteswap=0, addr=None) -> typing.Iterable[Bitspec]:
     """Generate a sequence of objects pattern-matched from bytes.
 
     Yields results until a match fails. Un-decoded bytes can be identified
@@ -446,10 +503,15 @@ def reachable_bitspec_classes(root):
     depth = 0
     while level:
         for cls in level:
-            if cls not in cls_tree:
+            # Subtle: traverse *entire* class tree, but only return bitspec
+            # matches. This means A->B->C where only A and C are decorated will
+            # match both in A.from_bytes, but ignores B.
+            #
+            # This can come up when doing complicated things with operands for
+            # the sake of code-golfing a lifter into something legible.
+            if cls not in cls_tree and is_bitspec(cls):
                 cls_tree[cls] = depth
-            {next_level.add(sub_cls) for sub_cls in cls.__subclasses__()
-                                     if is_bitspec(sub_cls)}
+            {next_level.add(sub_cls) for sub_cls in cls.__subclasses__()}
         level, next_level = next_level, set()
         depth += 1
     max_depth = depth
@@ -470,10 +532,10 @@ def __precompute(cls):
     return opaque
 
 @functools.lru_cache(maxsize=4096)
-def from_bytes(cls, bytes, byteswap=0):
+def from_bytes(cls, bytes: bytes, byteswap=0) -> typing.Optional[Bitspec]:
     """Constructor classmethod.
 
-    Argsuments:
+    Arguments:
         byteswap(int): little-endian word width in bytes, 
                        0 for big-endian
 
@@ -498,7 +560,7 @@ successful matches, deserializing non-bitspec subclasses do not make sense.
 
     bytes = swap_endianness(bytes, byteswap)
     if not (possible_matches := Match.multimatch_execute(opaque, bytes)):
-        return
+        return None
     _, _, match, matched_cls = max(possible_matches)
 
     # build object
@@ -596,12 +658,13 @@ def swap_endianness(bytes, word_length):
         raise NotImplementedError(msg)
 
 
-def to_bytes(self: BS, byteswap=0) -> bytes:
-    """Inverse of from_bytes.
+def to_bytes(self: Bitspec, byteswap=0) -> bytes:
+    """Rarely-used inverse of from_bytes.
     
     Only works if object has fields that exactly match its constructor
     arguments. This is a common Python convention and is true for PEP 557
-    dataclasses, but if you don't intend to use this method you can ignore it.
+    dataclasses, but if you don't intend to use this method you can completely
+    ignore the convention.
     
     Ambiguities are resolved as follows:
 
@@ -650,8 +713,13 @@ def to_bytes(self: BS, byteswap=0) -> bytes:
     return swap_endianness(big_endian, byteswap)
 
 
-def __matched_length(self: BS) -> int:
-    """Default-added __len__ implementation. In bytes."""
+def byte_length(self: Bitspec) -> int:
+    """Byte length of matched value.
+    
+    If the object wasn't built by calling `from_bytes` or `iter_bytes`, length
+    should still be correct in simple cases. Multiple matches of variable
+    lengths *might* result in wrong length being returned.
+    """
     if match := getattr(self, _MATCH, None):
         return match.byte_length
     else:
@@ -665,13 +733,6 @@ def __matched_length(self: BS) -> int:
         assert type(self) != type
         match = list(getattr(self.__class__, _SPEC).keys())[0] # lol guess
         return match.byte_length
-
-# Attribute name for storing bitfield spec, canonical indicator for is_bitspec.
-_SPEC = '__bitspec__'
-# Cache of all subclasses, updated when __hash__ changes or on first use?
-_CACHE = '__bitspec_cache__'
-# Which pattern an object was matched from. (Used only in re-assembly.)
-_MATCH = '__bitspec_match__'
 
 
 BIT_CONST_CHARS = set('01.-')
@@ -780,7 +841,7 @@ specification, or just some forgotten '....' don't-care padding.'''
 
     return match, var_fields
 
-class Match(NamedTuple):
+class Match(typing.NamedTuple):
     """Match some constant bits inside an exact length of bytes."""
     mask: int
     const: int
@@ -831,14 +892,13 @@ class Match(NamedTuple):
             for match,result in matches:
                 const_lut += [(m.const, result) for m,result in matches
                                                 if m.mask == mask]
-            const_lut = {const: list(t[1] for t in group)
+            lut[mask] = {const: list(t[1] for t in group)
                          for const,group in groupby(sorted(const_lut, key=first),
                                                     key=first)}
-            lut[mask] = const_lut
         return unique_masks,lut
 
     @staticmethod
-    def multimatch_execute(opaque:object, bytes) -> list:
+    def multimatch_execute(opaque, bytes) -> list:
         unique_masks,lut = opaque
         acc = []
         for byte_length, mask in unique_masks:
@@ -849,8 +909,7 @@ class Match(NamedTuple):
         return acc
 
 
-#@dataclasses.dataclass(eq=True, frozen=True)
-class Slice(NamedTuple):
+class Slice(typing.NamedTuple):
     """Extract a contiguous region of bits from fixed length of bytes.
 
     >>> s = bitspec.Slice(0x00ff00, 8, True, 3)
@@ -966,14 +1025,17 @@ def install_methods(cls, match, var_fields, const_fields):
 First option: {spec[match]!r}
 Second option: {fields!r}'''
         raise SyntaxError(msg)
-    spec[match] = fields
+    if match != None:
+        # Sometimes we decorate a class that can't be matched but anchors other
+        # matches. Still set _SPEC so is_bitspec works.
+        spec[match] = fields
     setattr(cls, _SPEC, spec)
 
     if not getattr(cls, 'from_bytes', None):
         setattr(cls, 'from_bytes', classmethod(from_bytes))
     if not getattr(cls, 'iter_bytes', None):
         setattr(cls, 'iter_bytes', classmethod(iter_bytes))
-    set_new_attr(cls, '__len__', __matched_length)
+    set_new_attr(cls, '__len__', byte_length)
     set_new_attr(cls, 'to_bytes', to_bytes)
     return cls
 
@@ -990,14 +1052,21 @@ def set_new_attr(cls, name, value):
     setattr(cls, name, value)
 
 
+# define declaration @ top of file
+Bitspec.from_bytes = classmethod(from_bytes)
+Bitspec.iter_bytes = classmethod(iter_bytes)
+Bitspec.__len__ = byte_length
+Bitspec.to_bytes = to_bytes
+
 
 if __name__ == '__main__':
     import doctest
-    import bitspec
+    import bitspec as bs
     doctest.testmod(
         #optionflags=doctest.REPORT_ONLY_FIRST_FAILURE,
+        optionflags=doctest.ELLIPSIS,
         #verbose=True,
         globs={
-            'bitspec':bitspec,
+            'bitspec':bs,
         },
     )

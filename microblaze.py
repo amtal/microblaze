@@ -109,7 +109,7 @@ class Rb(Register): pass
 
 @bitspec.dataclass('0x80000000', op='NOP') # or r0, r0, r0
 @bitspec.dataclass('0x10000000', op='NOP') # addk r0, r0, r0
-class Op:
+class Op(bitspec.Bitspec):
     op:str
     d:Operand = None
     a:Operand = None
@@ -388,7 +388,7 @@ class FSLBus(Op):
         iface = il.const(4, self.flags.fsl_x) if 'TD' not in self.op else self.b.r(il)
         if 'GET' in self.op:
             il.append(il.intrinsic(
-                [self.arch.regs[f'r{self.d.n}']],
+                [self.arch.regs[f'r{self.d.n}'].index],
                 iname,
                 [iface] + flags,
             ))
@@ -453,7 +453,12 @@ class BitArith(Arith): pass
 class PatCmpBytes(Op):
     def lift(self, il):
         a, b = self.a.r(il), self.b.r(il)
-        self.d.w(il, il.unimplemented())
+        il.append(il.intrinsic(
+            [bn.LLIL_TEMP(0)],
+            'pcmpbf',
+            [a, b],
+        ))
+        self.d.w(il, il.reg(4, bn.LLIL_TEMP(0)))
 
 @bitspec.dataclass('100010 -:15 10000000000', d=Rd, a=Ra, b=Rb, op='PCMPEQ')
 @bitspec.dataclass('100011 -:15 10000000000', d=Rd, a=Ra, b=Rb, op='PCMPNE')
@@ -493,7 +498,7 @@ class Bit(Op):
 class CountLeadingZeros(Op):
     def lift(self, il):
         il.append(il.intrinsic(
-            [self.arch.regs[f'r{self.d.n}']],
+            [self.arch.regs[f'r{self.d.n}'].index],
             '__lzcnt32',
             [self.a.r(il)],
         ))
@@ -501,8 +506,11 @@ class CountLeadingZeros(Op):
 @bitspec.dataclass('100100 -:10 0000000111100000', d=Rd, a=Ra, op='SWAPB')
 @bitspec.dataclass('100100 -:10 0000000111100010', d=Rd, a=Ra, op='SWAPH')
 class EndianSwap(Op):
-    pass
-
+    def lift(self, il):
+        if self.op == 'SWAPB':
+            self.d.w(il, ntoh_dword(il, self.arch, self.a.r(il), 4))
+        else:
+            il.append(il.unimplemented())
 
 @bitspec.dataclass('100100 00000 -:10 00001101000', a=Ra, b=Rb, op='WIC')
 @bitspec.dataclass('100100 00000 -:10 00001100100', a=Ra, b=Rb, op='WDC')
@@ -576,7 +584,7 @@ class MoveSpecialReg(Op):
                 ))
             else:
                 il.append(il.intrinsic(
-                    [self.arch.regs[f'r{self.d.n}']],
+                    [self.arch.regs[f'r{self.d.n}'].index],
                     'move_from_spr', 
                     [il.const(4, self.d.reg)]
                 ))
@@ -936,8 +944,8 @@ def ntoh_dword(il, arch, val, size=4):
     if size != 4:
         return il.unimplemented()
     il.append(il.intrinsic(
-        [arch.regs['temp']],
+        [bn.LLIL_TEMP(0)],
         'ntoh',
         [val],
     ))
-    return il.reg(4, 'temp')
+    return il.reg(4, bn.LLIL_TEMP(0))

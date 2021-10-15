@@ -1,3 +1,4 @@
+import functools
 import binaryninja as bn
 from . import microblaze
 
@@ -27,9 +28,6 @@ class MicroBlaze32LE(bn.Architecture):
     flags_written_by_flag_write_type = {'carry':['c'],}
 
     system_regs = [
-        # intrinsic temporary output since LLIL_TEMP doesn't work from Python
-        # only used by endian-reversed load/store hack, delete once fixed
-        'temp',
         # LWX/SWX reservation marker
         'reserved',
         # all this for MTS/MFS instructions...
@@ -54,6 +52,10 @@ class MicroBlaze32LE(bn.Architecture):
             '__lzcnt32':bn.IntrinsicInfo(
                 [bn.Type.int(4, False)], 
                 [bn.Type.int(4, False)],
+            ),
+            'pcmpbf':bn.IntrinsicInfo(  # lazy lift, real one is a series
+                [bn.Type.int(4, False)], # of byte comparisons + branches
+                [bn.Type.int(4, False), bn.Type.int(4, False)],
             ),
             'ntoh':bn.IntrinsicInfo(    # this'll break dataflow if it shows
                 [bn.Type.int(4, False)], # up a lot, easy but tedious fix in
@@ -94,6 +96,7 @@ class MicroBlaze32LE(bn.Architecture):
     intrinsics['dcache_clear'] = intrinsics['icache_clear']
     intrinsics['dcache_flush'] = intrinsics['icache_clear']
 
+    @functools.lru_cache(maxsize=None)
     def get_instruction_info(self, data, addr):
         for i in fuse_ops(data, addr, self.endianness):
             return i.info()
