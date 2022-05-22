@@ -486,7 +486,7 @@ class Bit(Op):
         else:
             one = il.const(1, 1)
             if self.op == 'SRL':
-                val = il.shift_left(4, a, one, flags='carry')
+                val = il.logical_shift_right(4, a, one)
             elif self.op == 'SRA':
                 val = il.arith_shift_right(4, a, one, flags='carry')
             elif self.op == 'SRC':
