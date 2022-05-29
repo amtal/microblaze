@@ -146,7 +146,7 @@ def fuse_ops(data, addr, order):
             if isinstance(y.b, microblaze.Imm16):
                 y = copy.copy(y)  # ???
                 y.b = microblaze.Imm32(
-                    i=(x.b.i << 16) | (y.b.i),
+                    i=(x.b.i << 16) | (y.b.i & 0xFFFF),
                     fused_from=type(y.b)
                 )
                 # length is treated as 8 to fool assembler algorithm, but .addr

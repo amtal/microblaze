@@ -205,7 +205,7 @@ class MicroBlazeELFRelocationHandler(CustomRelocationHandler):
                 reloc.truncateSize = 4
             elif reloc.nativeType == R_MICROBLAZE._COPY:
                 reloc.type = bn.RelocationType.ELFCopyRelocationType
-                reloc.pcRelative = false
+                reloc.pcRelative = False
                 reloc.baseRelative = False
                 reloc.size = 4
                 reloc.truncateSize = 4
